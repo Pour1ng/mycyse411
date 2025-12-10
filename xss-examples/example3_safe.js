@@ -1,5 +1,7 @@
 app.get('/search', (req, res) => {
-  const q = req.query.q || ''; 
-  res.type('text/plain');
-  res.send(`Results for ${q}`); 
+  const q = req.query.q || '';
+  res.json({
+    message: "Search results",
+    query: q
+  });
 });
