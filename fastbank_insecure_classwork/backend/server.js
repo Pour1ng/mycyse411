@@ -14,7 +14,7 @@ app.use((req, res, next) => {
   // 1. CSP: Strictly define allowed sources + frame-ancestors/form-action for ZAP
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-ancestors 'none'; form-action 'self';"
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self';"
   );
 
   // 2. Permissions Policy
