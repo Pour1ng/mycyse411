@@ -7,7 +7,7 @@ const crypto = require("crypto");
 
 const app = express();
 
-// --- ZAP SECURITY HEADERS (The missing piece!) ---
+// --- ZAP SECURITY HEADERS (REQUIRED) ---
 app.disable('x-powered-by');
 
 app.use((req, res, next) => {
@@ -17,10 +17,10 @@ app.use((req, res, next) => {
     "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-ancestors 'none'; form-action 'self';"
   );
 
-  // 2. Permissions Policy: Disable features
+  // 2. Permissions Policy
   res.setHeader("Permissions-Policy", "geolocation=(), camera=(), microphone=()");
 
-  // 3. Cache Control: Stop "Storable" info alerts
+  // 3. Cache Control
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
@@ -28,7 +28,7 @@ app.use((req, res, next) => {
 
   next();
 });
-// ------------------------------------------------
+// ---------------------------------------
 
 app.use(
   cors({
