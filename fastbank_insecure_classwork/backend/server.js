@@ -7,26 +7,29 @@ const crypto = require("crypto");
 
 const app = express();
 
-// --- ZAP SECURITY FIXES (REQUIRED FOR PASSING GRADE) ---
-app.disable('x-powered-by'); // Fixes "Server Leaks Information"
+// --- ZAP SECURITY HEADERS (The missing piece!) ---
+app.disable('x-powered-by');
 
 app.use((req, res, next) => {
-  // Fixes "CSP: Failure to Define Directive"
-  res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none';");
-  
-  // Fixes "Permissions Policy Header Not Set"
+  // 1. CSP: Strictly define allowed sources + frame-ancestors/form-action for ZAP
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-ancestors 'none'; form-action 'self';"
+  );
+
+  // 2. Permissions Policy: Disable features
   res.setHeader("Permissions-Policy", "geolocation=(), camera=(), microphone=()");
-  
-  // Fixes "Storable and Cacheable Content" (Informational alert)
+
+  // 3. Cache Control: Stop "Storable" info alerts
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
-  
+  res.setHeader("X-Content-Type-Options", "nosniff");
+
   next();
 });
-// ------------------------------------------------------
+// ------------------------------------------------
 
-// --- BASIC CORS (clean, not vulnerable) ---
 app.use(
   cors({
    origin: ["http://localhost:3001", "http://127.0.0.1:3001"],
@@ -37,7 +40,6 @@ app.use(
 app.use(bodyParser.json());
 app.use(cookieParser());
 
-// --- IN-MEMORY SQLITE DB (clean) ---
 const db = new sqlite3.Database(":memory:");
 
 db.serialize(() => {
@@ -76,7 +78,6 @@ db.serialize(() => {
   db.run(`INSERT INTO transactions (user_id, amount, description) VALUES (1, 100, 'Groceries')`);
 });
 
-// --- SESSION STORE ---
 const sessions = {};
 
 function fastHash(pwd) {
@@ -102,7 +103,7 @@ app.post("/login", (req, res) => {
       return res.status(401).json({ error: "Wrong password" });
     }
 
-    const sid = `${username}-${Date.now()}`; 
+    const sid = `${username}-${Date.now()}`;
     sessions[sid] = { userId: user.id };
     res.cookie("sid", sid, {});
     res.json({ success: true });
