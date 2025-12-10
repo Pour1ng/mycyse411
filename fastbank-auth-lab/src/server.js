@@ -1,108 +1,72 @@
 const express = require("express");
-const bodyParser = require("body-parser");
-const cookieParser = require("cookie-parser");
-const crypto = require("crypto");
-// bcrypt is installed but NOT used in the vulnerable baseline:
-const bcrypt = require("bcrypt");
-
 const app = express();
-const PORT = 3001;
 
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json());
-app.use(cookieParser());
-app.use(express.static("public"));
+// FIX 1: Disable the "X-Powered-By" header to hide the tech stack
+app.disable('x-powered-by');
 
-/**
- * VULNERABLE FAKE USER DB
- * For simplicity, we start with a single user whose password is "password123".
- * In the vulnerable version, we hash with a fast hash (SHA-256-like).
- */
+// FIX 2: Strict Security Headers for ZAP
+app.use((req, res, next) => {
+  // ZAP requires 'form-action' and 'frame-ancestors' to be explicitly defined
+  res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none';");
+  res.setHeader("Permissions-Policy", "geolocation=(), camera=(), microphone=()");
+  // Cache control to fix "Storable and Cacheable Content" info alert
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
+
+app.use(express.json());
+
 const users = [
-  {
-    id: 1,
-    username: "student",
-    // VULNERABLE: fast hash without salt
-    passwordHash: fastHash("password123") // students must replace this scheme with bcrypt
-  }
+  { id: 1, name: "Alice", role: "customer", department: "north" },
+  { id: 2, name: "Bob", role: "customer", department: "south" },
+  { id: 3, name: "Charlie", role: "support", department: "north" },
 ];
 
-// In-memory session store
-const sessions = {}; // token -> { userId }
+const orders = [
+  { id: 1, userId: 1, item: "Laptop", region: "north", total: 2000 },
+  { id: 2, userId: 1, item: "Mouse", region: "north", total: 40 },
+  { id: 3, userId: 2, item: "Monitor", region: "south", total: 300 },
+  { id: 4, userId: 2, item: "Keyboard", region: "south", total: 60 },
+];
 
-/**
- * VULNERABLE FAST HASH FUNCTION
- * Students MUST STOP using this and replace logic with bcrypt.
- */
-function fastHash(password) {
-  return crypto.createHash("sha256").update(password).digest("hex");
-}
+function fakeAuth(req, res, next) {
+  const idHeader = req.header("X-User-Id");
+  const id = idHeader ? parseInt(idHeader, 10) : null;
 
-// Helper: find user by username
-function findUser(username) {
-  return users.find((u) => u.username === username);
-}
-
-// Home API just to show who is logged in
-app.get("/api/me", (req, res) => {
-  const token = req.cookies.session;
-  if (!token || !sessions[token]) {
-    return res.status(401).json({ authenticated: false });
-  }
-  const session = sessions[token];
-  const user = users.find((u) => u.id === session.userId);
-  res.json({ authenticated: true, username: user.username });
-});
-
-/**
- * VULNERABLE LOGIN ENDPOINT
- * - Uses fastHash instead of bcrypt
- * - Error messages leak whether username exists
- * - Session token is simple and predictable
- * - Cookie lacks security flags
- */
-app.post("/api/login", (req, res) => {
-  const { username, password } = req.body;
-  const user = findUser(username);
-
+  const user = users.find((u) => u.id === id);
   if (!user) {
-    // VULNERABLE: username enumeration via message
-    return res
-      .status(401)
-      .json({ success: false, message: "Unknown username" });
+    return res.status(401).json({ error: "Unauthenticated: set X-User-Id" });
   }
 
-  const candidateHash = fastHash(password);
-  if (candidateHash !== user.passwordHash) {
-    return res
-      .status(401)
-      .json({ success: false, message: "Wrong password" });
+  req.user = user;
+  next();
+}
+
+app.use(fakeAuth);
+
+app.get("/orders/:id", (req, res) => {
+  const orderId = parseInt(req.params.id, 10);
+
+  const order = orders.find((o) => o.id === orderId);
+  if (!order) {
+    return res.status(404).json({ error: "Order not found" });
   }
 
-  // VULNERABLE: predictable token
-  const token = username + "-" + Date.now();
+  // IDOR FIX
+  if (req.user.role !== 'support' && order.userId !== req.user.id) {
+      return res.status(403).json({ error: "Access Denied: You do not own this order." });
+  }
 
-  // VULNERABLE: session stored without expiration
-  sessions[token] = { userId: user.id };
-
-  // VULNERABLE: cookie without httpOnly, secure, sameSite
-  res.cookie("session", token, {
-    // students must add: httpOnly: true, secure: true, sameSite: "lax"
-  });
-
-  // Client-side JS (login.html) will store this token in localStorage (vulnerable)
-  res.json({ success: true, token });
+  return res.json(order);
 });
 
-app.post("/api/logout", (req, res) => {
-  const token = req.cookies.session;
-  if (token && sessions[token]) {
-    delete sessions[token];
-  }
-  res.clearCookie("session");
-  res.json({ success: true });
+app.get("/", (req, res) => {
+  res.json({ message: "Access Control Tutorial API", currentUser: req.user });
 });
 
+const PORT = 3000;
 app.listen(PORT, () => {
-  console.log(`FastBank Auth Lab running at http://localhost:${PORT}`);
+  console.log(`Server running at http://localhost:${PORT}`);
 });
