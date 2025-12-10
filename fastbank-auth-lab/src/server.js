@@ -74,7 +74,7 @@ app.get("/", (req, res) => {
   res.json({ message: "Access Control Tutorial API", currentUser: req.user });
 });
 
-const PORT = 3000; // Even if it says 3000 here, your package.json scripts might be setting it to 4000 via env vars
+const PORT = 4000; // Even if it says 3000 here, your package.json scripts might be setting it to 4000 via env vars
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
 });
