@@ -46,6 +46,10 @@ app.get("/orders/:id", (req, res) => {
     return res.status(404).json({ error: "Order not found" });
   }
 
+  if (req.user.role !== 'support' && order.userId !== req.user.id) {
+      return res.status(403).json({ error: "Access Denied: You do not own this order." });
+  }
+
   // BUG: no check that order.userId === req.user.id
   return res.json(order);
 });
