@@ -1,171 +1,123 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const cookieParser = require("cookie-parser");
-const cors = require("cors");
-const sqlite3 = require("sqlite3").verbose();
-const crypto = require("crypto");
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const { body, validationResult } = require('express-validator');
 
 const app = express();
 
-// --- BASIC CORS (clean, not vulnerable) ---
-app.use(
-  cors({
-   origin: ["http://localhost:3001", "http://127.0.0.1:3001"],
-    credentials: true
-  })
-);
+// --- ZAP FIXES: SECURITY HEADERS ---
+app.disable('x-powered-by'); // Fixes "Server Leaks Information"
 
-app.use(bodyParser.json());
-app.use(cookieParser());
-
-// --- IN-MEMORY SQLITE DB (clean) ---
-const db = new sqlite3.Database(":memory:");
-
-db.serialize(() => {
-  db.run(`
-    CREATE TABLE users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT UNIQUE,
-      password_hash TEXT,
-      email TEXT
-    );
-  `);
-
-  db.run(`
-    CREATE TABLE transactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER,
-      amount REAL,
-      description TEXT
-    );
-  `);
-
-  db.run(`
-    CREATE TABLE feedback (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user TEXT,
-      comment TEXT
-    );
-  `);
-
-  const passwordHash = crypto.createHash("sha256").update("password123").digest("hex");
-
-  db.run(`INSERT INTO users (username, password_hash, email)
-          VALUES ('alice', '${passwordHash}', 'alice@example.com');`);
-
-  db.run(`INSERT INTO transactions (user_id, amount, description) VALUES (1, 25.50, 'Coffee shop')`);
-  db.run(`INSERT INTO transactions (user_id, amount, description) VALUES (1, 100, 'Groceries')`);
-});
-
-// --- SESSION STORE (simple, predictable token exactly like assignment) ---
-const sessions = {};
-
-function fastHash(pwd) {
-  return crypto.createHash("sha256").update(pwd).digest("hex");
-}
-
-function auth(req, res, next) {
-  const sid = req.cookies.sid;
-  if (!sid || !sessions[sid]) return res.status(401).json({ error: "Not authenticated" });
-  req.user = { id: sessions[sid].userId };
+app.use((req, res, next) => {
+  // Fixes "CSP: Failure to Define Directive"
+  res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none';");
+  
+  // Fixes "Permissions Policy Header Not Set"
+  res.setHeader("Permissions-Policy", "geolocation=(), camera=(), microphone=()");
+  
+  // Fixes "Storable and Cacheable Content"
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  
   next();
+});
+// -----------------------------------
+
+app.use(express.urlencoded({ extended: false }));
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+const BASE_DIR = path.resolve(__dirname, 'files');
+if (!fs.existsSync(BASE_DIR)) fs.mkdirSync(BASE_DIR, { recursive: true });
+
+// helper to canonicalize and check
+function resolveSafe(baseDir, userInput) {
+  try {
+    userInput = decodeURIComponent(userInput);
+  } catch (e) {}
+  return path.resolve(baseDir, userInput);
 }
 
-// ------------------------------------------------------------
-// Q4 — AUTH ISSUE 1 & 2: SHA256 fast hash + SQLi in username.
-// Q4 — AUTH ISSUE 3: Username enumeration.
-// Q4 — AUTH ISSUE 4: Predictable sessionId.
-// ------------------------------------------------------------
-app.post("/login", (req, res) => {
-  const { username, password } = req.body;
+// Secure route
+app.post(
+  '/read',
+  body('filename')
+    .exists().withMessage('filename required')
+    .bail()
+    .isString()
+    .trim()
+    .notEmpty().withMessage('filename must not be empty')
+    .custom(value => {
+      if (value.includes('\0')) throw new Error('null byte not allowed');
+      return true;
+    }),
+  (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-  const sql = `SELECT id, username, password_hash FROM users WHERE username = '${username}'`;
-
-  db.get(sql, (err, user) => {
-    if (!user) return res.status(404).json({ error: "Unknown username" });
-
-    const candidate = fastHash(password);
-    if (candidate !== user.password_hash) {
-      return res.status(401).json({ error: "Wrong password" });
+    const filename = req.body.filename;
+    const normalized = resolveSafe(BASE_DIR, filename);
+    if (!normalized.startsWith(BASE_DIR + path.sep)) {
+      return res.status(403).json({ error: 'Path traversal detected' });
     }
+    if (!fs.existsSync(normalized)) return res.status(404).json({ error: 'File not found' });
 
-    const sid = `${username}-${Date.now()}`; // predictable
-    sessions[sid] = { userId: user.id };
-
-    // Cookie is intentionally “normal” (not HttpOnly / secure)
-    res.cookie("sid", sid, {});
-
-    res.json({ success: true });
-  });
-});
-
-// ------------------------------------------------------------
-// /me — clean route, no vulnerabilities
-// ------------------------------------------------------------
-app.get("/me", auth, (req, res) => {
-  db.get(`SELECT username, email FROM users WHERE id = ${req.user.id}`, (err, row) => {
-    res.json(row);
-  });
-});
-
-// ------------------------------------------------------------
-// Q1 — SQLi in transaction search
-// ------------------------------------------------------------
-app.get("/transactions", auth, (req, res) => {
-  const q = req.query.q || "";
-  const sql = `
-    SELECT id, amount, description
-    FROM transactions
-    WHERE user_id = ${req.user.id}
-      AND description LIKE '%${q}%'
-    ORDER BY id DESC
-  `;
-  db.all(sql, (err, rows) => res.json(rows));
-});
-
-// ------------------------------------------------------------
-// Q2 — Stored XSS + SQLi in feedback insert
-// ------------------------------------------------------------
-app.post("/feedback", auth, (req, res) => {
-  const comment = req.body.comment;
-  const userId = req.user.id;
-
-  db.get(`SELECT username FROM users WHERE id = ${userId}`, (err, row) => {
-    const username = row.username;
-
-    const insert = `
-      INSERT INTO feedback (user, comment)
-      VALUES ('${username}', '${comment}')
-    `;
-    db.run(insert, () => {
-      res.json({ success: true });
-    });
-  });
-});
-
-app.get("/feedback", auth, (req, res) => {
-  db.all("SELECT user, comment FROM feedback ORDER BY id DESC", (err, rows) => {
-    res.json(rows);
-  });
-});
-
-// ------------------------------------------------------------
-// Q3 — CSRF + SQLi in email update
-// ------------------------------------------------------------
-app.post("/change-email", auth, (req, res) => {
-  const newEmail = req.body.email;
-
-  if (!newEmail.includes("@")) return res.status(400).json({ error: "Invalid email" });
-
-  const sql = `
-    UPDATE users SET email = '${newEmail}' WHERE id = ${req.user.id}
-  `;
-  db.run(sql, () => {
-    res.json({ success: true, email: newEmail });
-  });
-});
-
-// ------------------------------------------------------------
-app.listen(4000, () =>
-  console.log("FastBank Version A backend running on http://localhost:4000")
+    const content = fs.readFileSync(normalized, 'utf8');
+    res.json({ path: normalized, content });
+  }
 );
+
+// --- SEMGREP FIX: WHITELIST APPROACH ---
+app.post('/read-no-validate', (req, res) => {
+  const userInput = req.body.filename || '';
+
+  // NUCLEAR FIX: We look up the file in a dictionary.
+  // We NEVER use the user input directly in the file path.
+  const safeFiles = {
+    'hello.txt': 'hello.txt',
+    'readme.md': 'readme.md',
+    'notes/readme.md': 'notes/readme.md',
+    'public.txt': 'public.txt'
+  };
+
+  const safeName = safeFiles[userInput];
+
+  if (!safeName) {
+      return res.status(403).json({ error: "Access Denied: Invalid filename" });
+  }
+
+  // Use the hardcoded string from our map, not the user input
+  const joined = path.join(BASE_DIR, safeName);
+
+  if (!fs.existsSync(joined)) return res.status(404).json({ error: 'File not found' });
+  
+  const content = fs.readFileSync(joined, 'utf8');
+  res.json({ path: joined, content });
+});
+// ---------------------------------------
+
+// Helper route for samples
+app.post('/setup-sample', (req, res) => {
+  const samples = {
+    'hello.txt': 'Hello from safe file!\n',
+    'notes/readme.md': '# Readme\nSample readme file'
+  };
+  Object.keys(samples).forEach(k => {
+    const p = path.resolve(BASE_DIR, k);
+    const d = path.dirname(p);
+    if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(p, samples[k], 'utf8');
+  });
+  res.json({ ok: true, base: BASE_DIR });
+});
+
+// Only listen when run directly
+if (require.main === module) {
+  const port = process.env.PORT || 4000;
+  app.listen(port, () => {
+    console.log(`Server listening on http://localhost:${port}`);
+  });
+}
+
+module.exports = app;
