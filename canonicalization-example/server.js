@@ -1,84 +1,72 @@
-// server.js
-const express = require('express');
-const path = require('path');
-const fs = require('fs');
-const { body, validationResult } = require('express-validator');
-
+const express = require("express");
 const app = express();
-app.use(express.urlencoded({ extended: false }));
+
+// FIX 1: Disable the "X-Powered-By" header to hide the tech stack
+app.disable('x-powered-by');
+
+// FIX 2: Strict Security Headers for ZAP
+app.use((req, res, next) => {
+  // ZAP requires 'form-action' and 'frame-ancestors' to be explicitly defined
+  res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none';");
+  res.setHeader("Permissions-Policy", "geolocation=(), camera=(), microphone=()");
+  // Cache control to fix "Storable and Cacheable Content" info alert
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
+
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
 
-const BASE_DIR = path.resolve(__dirname, 'files');
-if (!fs.existsSync(BASE_DIR)) fs.mkdirSync(BASE_DIR, { recursive: true });
+const users = [
+  { id: 1, name: "Alice", role: "customer", department: "north" },
+  { id: 2, name: "Bob", role: "customer", department: "south" },
+  { id: 3, name: "Charlie", role: "support", department: "north" },
+];
 
-// helper to canonicalize and check
-function resolveSafe(baseDir, userInput) {
-  try {
-    userInput = decodeURIComponent(userInput);
-  } catch (e) {}
-  return path.resolve(baseDir, userInput);
-}
+const orders = [
+  { id: 1, userId: 1, item: "Laptop", region: "north", total: 2000 },
+  { id: 2, userId: 1, item: "Mouse", region: "north", total: 40 },
+  { id: 3, userId: 2, item: "Monitor", region: "south", total: 300 },
+  { id: 4, userId: 2, item: "Keyboard", region: "south", total: 60 },
+];
 
-// Secure route
-app.post(
-  '/read',
-  body('filename')
-    .exists().withMessage('filename required')
-    .bail()
-    .isString()
-    .trim()
-    .notEmpty().withMessage('filename must not be empty')
-    .custom(value => {
-      if (value.includes('\0')) throw new Error('null byte not allowed');
-      return true;
-    }),
-  (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+function fakeAuth(req, res, next) {
+  const idHeader = req.header("X-User-Id");
+  const id = idHeader ? parseInt(idHeader, 10) : null;
 
-    const filename = req.body.filename;
-    const normalized = resolveSafe(BASE_DIR, filename);
-    if (!normalized.startsWith(BASE_DIR + path.sep)) {
-      return res.status(403).json({ error: 'Path traversal detected' });
-    }
-    if (!fs.existsSync(normalized)) return res.status(404).json({ error: 'File not found' });
-
-    const content = fs.readFileSync(normalized, 'utf8');
-    res.json({ path: normalized, content });
+  const user = users.find((u) => u.id === id);
+  if (!user) {
+    return res.status(401).json({ error: "Unauthenticated: set X-User-Id" });
   }
-);
 
-// Vulnerable route (demo)
-app.post('/read-no-validate', (req, res) => {
-  const filename = req.body.filename || '';
-  const joined = path.join(BASE_DIR, filename); // intentionally vulnerable
-  if (!fs.existsSync(joined)) return res.status(404).json({ error: 'File not found', path: joined });
-  const content = fs.readFileSync(joined, 'utf8');
-  res.json({ path: joined, content });
-});
-
-// Helper route for samples
-app.post('/setup-sample', (req, res) => {
-  const samples = {
-    'hello.txt': 'Hello from safe file!\n',
-    'notes/readme.md': '# Readme\nSample readme file'
-  };
-  Object.keys(samples).forEach(k => {
-    const p = path.resolve(BASE_DIR, k);
-    const d = path.dirname(p);
-    if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
-    fs.writeFileSync(p, samples[k], 'utf8');
-  });
-  res.json({ ok: true, base: BASE_DIR });
-});
-
-// Only listen when run directly (not when imported by tests)
-if (require.main === module) {
-  const port = process.env.PORT || 4000;
-  app.listen(port, () => {
-    console.log(`Server listening on http://localhost:${port}`);
-  });
+  req.user = user;
+  next();
 }
 
-module.exports = app;
+app.use(fakeAuth);
+
+app.get("/orders/:id", (req, res) => {
+  const orderId = parseInt(req.params.id, 10);
+
+  const order = orders.find((o) => o.id === orderId);
+  if (!order) {
+    return res.status(404).json({ error: "Order not found" });
+  }
+
+  // IDOR FIX
+  if (req.user.role !== 'support' && order.userId !== req.user.id) {
+      return res.status(403).json({ error: "Access Denied: You do not own this order." });
+  }
+
+  return res.json(order);
+});
+
+app.get("/", (req, res) => {
+  res.json({ message: "Access Control Tutorial API", currentUser: req.user });
+});
+
+const PORT = 3000;
+app.listen(PORT, () => {
+  console.log(`Server running at http://localhost:${PORT}`);
+});
