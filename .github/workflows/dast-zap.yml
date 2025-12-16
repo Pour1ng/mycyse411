@@ -10,7 +10,7 @@ jobs:
       fail-fast: false  # Don't stop other scans if one fails
       matrix:
         include:
-          # 1. Original FastBank Lab (Keep this working!)
+          # 1. Original FastBank Lab 
           - name: FastBank Insecure
             work_dir: fastbank_insecure_classwork/backend
             port: 4000
@@ -18,17 +18,17 @@ jobs:
           # 2. Canonicalization Lab (Task 1)
           - name: Canonicalization Lab
             work_dir: canonicalization-example
-            port: 3000   # <--- CHECK THIS PORT in server.js
+            port: 3000
 
           # 3. IDOR Lab (Task 1)
           - name: IDOR Lab
             work_dir: idor
-            port: 3000   # <--- CHECK THIS PORT in server.js
+            port: 3000 
 
           # 4. FastBank Auth Lab (Task 1)
           - name: FastBank Auth Lab
             work_dir: fastbank-auth-lab
-            port: 4000   # <--- CHECK THIS PORT in server.js
+            port: 4000
 
     steps:
       - name: Checkout repository
